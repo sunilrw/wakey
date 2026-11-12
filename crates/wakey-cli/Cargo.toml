@@ -1,0 +1,17 @@
+[package]
+name = "wakey-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wakey"
+path = "src/main.rs"
+
+[dependencies]
+wakey-core = { path = "../wakey-core" }
+anyhow = "1.0"
+chrono = "0.4"
+clap = { version = "4.5", features = ["derive"] }
+ctrlc = "3.4"
+humantime = "2.1"

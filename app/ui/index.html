@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>wakey — Smart Keep-Awake Dashboard</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-dot" id="brandDot"></div>
+          <div>
+            <div class="brand-name">wakey</div>
+            <div class="brand-sub" id="batteryBadge">Checking power…</div>
+          </div>
+        </div>
+
+        <nav class="nav">
+          <button class="nav-btn active" data-view="home">Home</button>
+          <button class="nav-btn" data-view="schedules">Schedules</button>
+          <button class="nav-btn" data-view="agents">Agent Watch</button>
+          <button class="nav-btn" data-view="habits">Habits</button>
+          <button class="nav-btn" data-view="settings">Settings</button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="pill" id="statusPill">Loading…</div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <!-- HOME VIEW -->
+        <section class="view active" id="view-home">
+          <div class="hero-card">
+            <div class="hero-top">
+              <div>
+                <div class="eyebrow">Current Power State</div>
+                <h1 id="heroState">Sleep Allowed</h1>
+                <p class="muted" id="heroReason">No active keep-awake trigger</p>
+              </div>
+              <div class="countdown" id="heroCountdown">—</div>
+            </div>
+
+            <div class="quick-actions">
+              <button class="btn primary" data-awake="30m">30m</button>
+              <button class="btn primary" data-awake="1h">1h</button>
+              <button class="btn primary" data-awake="2h">2h</button>
+              <button class="btn" id="btnExtend30">+30m</button>
+              <button class="btn" id="btnPause">Pause</button>
+              <button class="btn danger" id="btnStop">Stop</button>
+            </div>
+
+            <div class="inline-toggle">
+              <label class="switch-row">
+                <input type="checkbox" id="quickKeepDisplay" />
+                <span>Keep screen on (prevent display off &amp; lock)</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <div class="card-header">
+                <h2>Detected AI Agents</h2>
+                <span class="badge" id="agentCountBadge">0</span>
+              </div>
+              <div id="detectedAgentsList" class="list-stack muted">
+                No watched agents running right now.
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <h2>Why Didn't My PC Sleep?</h2>
+                <span class="badge">Audit</span>
+              </div>
+              <div id="auditList" class="list-stack muted">
+                No recent events yet.
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- SCHEDULES VIEW -->
+        <section class="view" id="view-schedules">
+          <div class="section-head">
+            <div>
+              <h1>Daily &amp; Weekly Schedules</h1>
+              <p class="muted">Automatically keep your machine awake during recurring hours.</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Add Schedule</h2>
+            <form id="scheduleForm" class="form-grid">
+              <label>
+                <span>Name</span>
+                <input type="text" id="schedName" placeholder="Workday" required />
+              </label>
+              <label>
+                <span>Days</span>
+                <input type="text" id="schedDays" placeholder="mon-fri, daily, or sat,sun" value="mon-fri" required />
+              </label>
+              <label>
+                <span>Start (HH:MM)</span>
+                <input type="time" id="schedStart" value="09:00" required />
+              </label>
+              <label>
+                <span>End (HH:MM)</span>
+                <input type="time" id="schedEnd" value="17:30" required />
+              </label>
+              <label class="checkbox-inline">
+                <input type="checkbox" id="schedDisplay" />
+                <span>Keep screen on</span>
+              </label>
+              <label class="checkbox-inline">
+                <input type="checkbox" id="schedBattery" />
+                <span>Allow on battery</span>
+              </label>
+              <div class="form-actions">
+                <button type="submit" class="btn primary">Save Schedule</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="card">
+            <h2>Configured Schedules</h2>
+            <div id="schedulesList" class="list-stack muted">No schedules yet.</div>
+          </div>
+        </section>
+
+        <!-- AGENT WATCH VIEW -->
+        <section class="view" id="view-agents">
+          <div class="section-head">
+            <div>
+              <h1>AI Agent &amp; Tool Watch</h1>
+              <p class="muted">Stay awake while popular AI agents or local LLMs are working, while letting your screen turn off.</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="settings-grid">
+              <label class="switch-row">
+                <input type="checkbox" id="awEnabled" />
+                <span>Enable Agent Watch</span>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" id="awKeepDisplay" />
+                <span>Keep screen on while agent runs</span>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" id="awOnBattery" />
+                <span>Allow Agent Watch on battery</span>
+              </label>
+              <label>
+                <span>Grace Period After Finish (minutes)</span>
+                <input type="number" id="awGrace" min="0" max="120" />
+              </label>
+              <label>
+                <span>Active CPU Threshold (%)</span>
+                <input type="number" id="awCpu" min="0.1" max="50" step="0.1" />
+              </label>
+            </div>
+            <div class="form-actions" style="margin-top: 12px;">
+              <button class="btn primary" id="btnSaveAgentWatch">Save Agent Settings</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Built-in AI Agent Presets</h2>
+            <div id="agentPresetsList" class="list-stack"></div>
+          </div>
+        </section>
+
+        <!-- HABITS VIEW -->
+        <section class="view" id="view-habits">
+          <div class="section-head">
+            <div>
+              <h1>Learned Habits</h1>
+              <p class="muted">When enabled, wakey learns repeated manual sessions and asks if you want to stay awake.</p>
+            </div>
+          </div>
+          <div class="card">
+            <div id="habitsList" class="list-stack muted">No learned patterns yet.</div>
+          </div>
+        </section>
+
+        <!-- SETTINGS VIEW -->
+        <section class="view" id="view-settings">
+          <div class="section-head">
+            <div>
+              <h1>Settings</h1>
+              <p class="muted">Configure power safety, pre-expiry warnings, habits, and your Grok bot bridge.</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Power &amp; Warnings</h2>
+            <div class="settings-grid">
+              <label class="switch-row">
+                <input type="checkbox" id="setAllowScreenOff" />
+                <span>Allow screen off by default</span>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" id="setPauseBattery" />
+                <span>Pause schedules/agents on battery</span>
+              </label>
+              <label>
+                <span>Min Battery Cutoff (%)</span>
+                <input type="number" id="setMinBattery" min="5" max="95" />
+              </label>
+              <label>
+                <span>Pre-Expiry Warning (minutes before end)</span>
+                <input type="number" id="setWarnMins" min="0" max="60" />
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" id="setHabitsEnabled" />
+                <span>Enable Habit Learning &amp; Prompts</span>
+              </label>
+              <label>
+                <span>Habit Min Occurrences</span>
+                <input type="number" id="setHabitMinOcc" min="2" max="20" />
+              </label>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Grok Bot &amp; Webhook Bridge</h2>
+            <div class="settings-grid">
+              <label class="switch-row">
+                <input type="checkbox" id="botEnabled" />
+                <span>Enable Grok Bot Bridge</span>
+              </label>
+              <label>
+                <span>Outbound Webhook URL</span>
+                <input type="url" id="botWebhook" placeholder="https://your-bot-endpoint/wakey-hook" />
+              </label>
+              <label>
+                <span>Webhook Secret / Bearer</span>
+                <input type="password" id="botSecret" placeholder="optional secret" />
+              </label>
+              <label>
+                <span>Inbound HTTP Listen Address</span>
+                <input type="text" id="botListen" placeholder="127.0.0.1:7842" />
+              </label>
+              <label>
+                <span>Inbound Auth Token</span>
+                <input type="password" id="botToken" placeholder="optional bearer token" />
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" id="botNotifyPreExpiry" />
+                <span>Send pre-expiry extend prompts to Grok bot</span>
+              </label>
+            </div>
+            <div class="form-actions" style="margin-top: 14px;">
+              <button class="btn primary" id="btnSaveSettings">Save All Settings</button>
+              <span class="muted" id="saveFeedback"></span>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

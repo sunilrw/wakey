@@ -1,0 +1,13 @@
+[package]
+name = "wakey-app"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+wakey-core = { path = "../../crates/wakey-core" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = ["tray-icon"] }
