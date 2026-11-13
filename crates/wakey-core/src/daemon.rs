@@ -11,9 +11,10 @@ use crate::agent_watch::AgentWatcher;
 use crate::bot_bridge::{
     send_bot_event_async, spawn_http_bridge, BotEventPayload, ControlCommand,
 };
-use crate::config::{Config, WeekdayShort};
+use crate::config::{Config, HabitConfig, WeekdayShort};
 use crate::habits::{
-    append_record, default_history_path, load_records, matching_habit_now, SessionRecord,
+    append_record_with_retention, default_history_path, load_records, matching_habit_now,
+    prune_history, SessionRecord,
 };
 use crate::ipc::{spawn_ipc_server, AuditEntry, BatteryInfo, DaemonSnapshot, IpcResponse};
 use crate::notify::send_desktop_notification;
@@ -56,6 +57,8 @@ pub fn start_daemon(enable_ipc: bool, enable_http_bridge: bool) -> DaemonHandle 
         reason: None,
         keep_display_on: false,
         remaining_seconds: None,
+        trigger_kind: "idle".into(),
+        sleep_at_clock: None,
         battery: battery_status().map(BatteryInfo::from),
         detected_agents: Vec::new(),
         active_schedule: None,
@@ -73,6 +76,12 @@ pub fn start_daemon(enable_ipc: bool, enable_http_bridge: bool) -> DaemonHandle 
     if enable_http_bridge {
         if let Ok(cfg) = Config::load_or_default() {
             let _ = spawn_http_bridge(cfg.bot, cmd_tx.clone());
+            crate::peers::spawn_peer_server(
+                cfg.peers.listen_port,
+                cmd_tx.clone(),
+                Arc::clone(&snapshot),
+            );
+            crate::peers::spawn_relay_heartbeat(cmd_tx.clone(), Arc::clone(&snapshot));
         }
     }
 
@@ -107,6 +116,11 @@ fn run_daemon_loop(
     cmd_rx: Receiver<(ControlCommand, Sender<String>)>,
 ) {
     let mut cfg = Config::load_or_default().unwrap_or_default();
+    let _ = prune_history(
+        &default_history_path(),
+        cfg.habits.retention_days,
+        cfg.habits.max_history_bytes,
+    );
     let mut watcher = AgentWatcher::new();
     let mut sched_state = ScheduleState::default();
     let mut manual: Option<ManualSession> = None;
@@ -131,6 +145,7 @@ fn run_daemon_loop(
                 cmd,
                 reply_tx,
                 &cfg,
+                &mut watcher,
                 &mut sched_state,
                 &mut manual,
                 &mut paused,
@@ -207,28 +222,77 @@ fn run_daemon_loop(
         let detected_agents = watcher.scan(&cfg.agent_watch);
         let sched_match = evaluate_schedules(&cfg.schedules, &sched_state, Local::now());
 
-        let mut desired: Option<(String, bool, Option<u64>)> = None;
+        struct DesiredWake {
+            reason: String,
+            keep_display_on: bool,
+            remaining_seconds: Option<u64>,
+            trigger_kind: String,
+            sleep_at_clock: Option<String>,
+        }
+
+        let mut desired: Option<DesiredWake> = None;
 
         if !paused && !battery_blocked {
             if let Some(sess) = manual.as_ref() {
                 let rem = sess
                     .ends_at
                     .map(|e| e.saturating_duration_since(Instant::now()).as_secs());
-                desired = Some(("Manual session".into(), sess.keep_display_on, rem));
+                let sleep_at = match rem {
+                    Some(rem_secs) => Some(
+                        (Local::now() + chrono::TimeDelta::seconds(rem_secs as i64))
+                            .format("%H:%M")
+                            .to_string(),
+                    ),
+                    None => Some("Indefinite (∞)".into()),
+                };
+                desired = Some(DesiredWake {
+                    reason: "Manual session".into(),
+                    keep_display_on: sess.keep_display_on,
+                    remaining_seconds: rem,
+                    trigger_kind: "manual".into(),
+                    sleep_at_clock: sleep_at,
+                });
             } else if let Some(ref s) = sched_match {
                 let allowed = s.on_battery || batt.map(|b| b.on_ac_power).unwrap_or(true);
                 if allowed {
-                    desired = Some((
-                        format!("Schedule: {}", s.name),
-                        s.keep_display_on,
-                        Some(s.remaining.as_secs()),
-                    ));
+                    desired = Some(DesiredWake {
+                        reason: format!("Schedule: {}", s.name),
+                        keep_display_on: s.keep_display_on,
+                        remaining_seconds: Some(s.remaining.as_secs()),
+                        trigger_kind: "schedule".into(),
+                        sleep_at_clock: Some(s.end_clock.clone()),
+                    });
                 }
-            } else if let Some(agent_reason) = watcher.evaluate(&cfg.agent_watch) {
+            } else if let Some(agent_reason) =
+                watcher.evaluate_detected(&cfg.agent_watch, &detected_agents)
+            {
                 let allowed =
                     cfg.agent_watch.on_battery || batt.map(|b| b.on_ac_power).unwrap_or(true);
                 if allowed {
-                    desired = Some((agent_reason, cfg.agent_watch.keep_display_on, None));
+                    let (trigger_kind, sleep_at) = if agent_reason.starts_with("Agent cooldown:") {
+                        (
+                            "cooldown".to_string(),
+                            Some(format!(
+                                "~{}m after agent stops",
+                                cfg.agent_watch.grace_period_minutes
+                            )),
+                        )
+                    } else {
+                        (
+                            "agent".to_string(),
+                            Some(format!(
+                                "{}m after agent finishes",
+                                cfg.agent_watch.grace_period_minutes
+                            )),
+                        )
+                    };
+                    desired = Some(DesiredWake {
+                        reason: agent_reason,
+                        keep_display_on: cfg.agent_watch.keep_display_on,
+                        remaining_seconds: None,
+                        trigger_kind,
+                        sleep_at_clock: sleep_at,
+                    });
                 }
             }
         }
@@ -268,26 +332,26 @@ fn run_daemon_loop(
 
         // Apply or release OS power assertion
         match desired {
-            Some((ref reason, keep_display, rem_secs)) => {
-                let new_key = (reason.clone(), keep_display);
+            Some(d) => {
+                let new_key = (d.reason.clone(), d.keep_display_on);
                 if active_key.as_ref() != Some(&new_key) {
                     drop(guard.take());
                     let opts = PowerOptions {
                         prevent_system_sleep: true,
-                        prevent_display_sleep: keep_display,
+                        prevent_display_sleep: d.keep_display_on,
                         allow_away_mode: false,
                     };
-                    if let Ok(g) = PowerGuard::acquire(opts, reason) {
+                    if let Ok(g) = PowerGuard::acquire(opts, &d.reason) {
                         guard = Some(g);
                         active_key = Some(new_key);
-                        push_audit(&mut audit, "awake", reason);
-                        if reason.starts_with("Agent active:") && cfg.bot.notify_on_agent {
+                        push_audit(&mut audit, "awake", &d.reason);
+                        if d.reason.starts_with("Agent active:") && cfg.bot.notify_on_agent {
                             send_bot_event_async(
                                 &cfg.bot,
                                 BotEventPayload {
                                     event: "agent_detected".into(),
                                     title: "wakey: AI agent detected".into(),
-                                    message: reason.clone(),
+                                    message: d.reason.clone(),
                                     actions: vec!["status".into(), "pause".into()],
                                     timestamp: Local::now(),
                                 },
@@ -296,12 +360,14 @@ fn run_daemon_loop(
                     }
                 }
 
-                let mut snap = shared_snapshot.lock().unwrap();
+                let mut snap = shared_snapshot.lock().unwrap_or_else(|e| e.into_inner());
                 snap.awake = true;
                 snap.paused = paused;
-                snap.reason = Some(reason.clone());
-                snap.keep_display_on = keep_display;
-                snap.remaining_seconds = rem_secs;
+                snap.reason = Some(d.reason);
+                snap.keep_display_on = d.keep_display_on;
+                snap.remaining_seconds = d.remaining_seconds;
+                snap.trigger_kind = d.trigger_kind;
+                snap.sleep_at_clock = d.sleep_at_clock;
                 snap.battery = batt.map(BatteryInfo::from);
                 snap.detected_agents = detected_agents;
                 snap.active_schedule = sched_match.map(|s| s.name);
@@ -313,12 +379,14 @@ fn run_daemon_loop(
                     active_key = None;
                     push_audit(&mut audit, "sleep_allowed", "No active wakey trigger");
                 }
-                let mut snap = shared_snapshot.lock().unwrap();
+                let mut snap = shared_snapshot.lock().unwrap_or_else(|e| e.into_inner());
                 snap.awake = false;
                 snap.paused = paused;
                 snap.reason = None;
                 snap.keep_display_on = false;
                 snap.remaining_seconds = None;
+                snap.trigger_kind = if paused { "paused" } else { "idle" }.into();
+                snap.sleep_at_clock = None;
                 snap.battery = batt.map(BatteryInfo::from);
                 snap.detected_agents = detected_agents;
                 snap.active_schedule = sched_match.map(|s| s.name);
@@ -332,6 +400,7 @@ fn run_daemon_loop(
                 cmd,
                 reply_tx,
                 &cfg,
+                &mut watcher,
                 &mut sched_state,
                 &mut manual,
                 &mut paused,
@@ -347,6 +416,7 @@ fn handle_daemon_command(
     cmd: ControlCommand,
     reply_tx: Sender<String>,
     cfg: &Config,
+    watcher: &mut AgentWatcher,
     sched_state: &mut ScheduleState,
     manual: &mut Option<ManualSession>,
     paused: &mut bool,
@@ -368,57 +438,112 @@ fn handle_daemon_command(
         }
         ControlCommand::Stop => {
             *manual = None;
-            *paused = false;
-            push_audit(audit, "stopped", "Manual session stopped");
-            "manual wakeup stopped".into()
+            watcher.clear_cooldown();
+            let auto_holding = evaluate_schedules(&cfg.schedules, sched_state, Local::now()).is_some()
+                || (cfg.agent_watch.enabled
+                    && watcher
+                        .scan(&cfg.agent_watch)
+                        .iter()
+                        .any(|a| a.is_actively_working));
+            if auto_holding {
+                *paused = true;
+                push_audit(
+                    audit,
+                    "stopped",
+                    "Stopped wake — sleeping now (auto-watch paused)",
+                );
+                "stopped wake; auto-watch paused so PC can sleep".into()
+            } else {
+                *paused = false;
+                push_audit(audit, "stopped", "Stopped wake — normal sleep allowed");
+                "wake stopped; normal sleep allowed".into()
+            }
         }
-        ControlCommand::AwakeFor { duration, display } => match parse_duration(&duration) {
-            Ok(dur) => {
-                let mins = (dur.as_secs() / 60).max(1) as u32;
+        ControlCommand::AwakeFor { duration, display } => {
+            let norm = duration.trim().to_lowercase();
+            if matches!(norm.as_str(), "forever" | "infinite" | "indefinite" | "∞" | "inf") {
                 *manual = Some(ManualSession {
-                    ends_at: Some(Instant::now() + dur),
-                    total_duration_mins: mins,
+                    ends_at: None,
+                    total_duration_mins: 0,
                     keep_display_on: display,
                     warned_pre_expiry: false,
                 });
                 *paused = false;
-                record_manual_session(mins, display);
-                let msg = format!("Awake for {}", humantime::format_duration(dur));
+                let msg = "Awake indefinitely".to_string();
                 push_audit(audit, "started", &msg);
-                if cfg.bot.notify_on_start {
-                    send_bot_event_async(
-                        &cfg.bot,
-                        BotEventPayload {
-                            event: "session_started".into(),
-                            title: "wakey started".into(),
-                            message: msg.clone(),
-                            actions: vec!["extend 30m".into(), "stop".into()],
-                            timestamp: Local::now(),
-                        },
-                    );
+                msg
+            } else {
+                match parse_duration(&duration) {
+                    Ok(dur) => match Instant::now().checked_add(dur) {
+                        Some(ends_at) => {
+                            let mins = (dur.as_secs() / 60).max(1) as u32;
+                            *manual = Some(ManualSession {
+                                ends_at: Some(ends_at),
+                                total_duration_mins: mins,
+                                keep_display_on: display,
+                                warned_pre_expiry: false,
+                            });
+                            *paused = false;
+                            record_manual_session(mins, display, &cfg.habits);
+                            let msg = format!("Awake for {}", humantime::format_duration(dur));
+                            push_audit(audit, "started", &msg);
+                            if cfg.bot.notify_on_start {
+                                send_bot_event_async(
+                                    &cfg.bot,
+                                    BotEventPayload {
+                                        event: "session_started".into(),
+                                        title: "wakey started".into(),
+                                        message: msg.clone(),
+                                        actions: vec!["extend 30m".into(), "stop".into()],
+                                        timestamp: Local::now(),
+                                    },
+                                );
+                            }
+                            msg
+                        }
+                        None => {
+                            ok = false;
+                            "duration exceeds maximum supported time".into()
+                        }
+                    },
+                    Err(e) => {
+                        ok = false;
+                        e.to_string()
+                    }
                 }
-                msg
             }
-            Err(e) => {
-                ok = false;
-                e.to_string()
+        }
+        ControlCommand::SetDisplay { display } => {
+            if let Some(sess) = manual.as_mut() {
+                sess.keep_display_on = display;
             }
-        },
+            if display {
+                "Screen kept on".into()
+            } else {
+                "Screen allowed to turn off".into()
+            }
+        }
         ControlCommand::AwakeUntil { clock, display } => match duration_until_clock(&clock) {
-            Ok(dur) => {
-                let mins = (dur.as_secs() / 60).max(1) as u32;
-                *manual = Some(ManualSession {
-                    ends_at: Some(Instant::now() + dur),
-                    total_duration_mins: mins,
-                    keep_display_on: display,
-                    warned_pre_expiry: false,
-                });
-                *paused = false;
-                record_manual_session(mins, display);
-                let msg = format!("Awake until {clock}");
-                push_audit(audit, "started", &msg);
-                msg
-            }
+            Ok(dur) => match Instant::now().checked_add(dur) {
+                Some(ends_at) => {
+                    let mins = (dur.as_secs() / 60).max(1) as u32;
+                    *manual = Some(ManualSession {
+                        ends_at: Some(ends_at),
+                        total_duration_mins: mins,
+                        keep_display_on: display,
+                        warned_pre_expiry: false,
+                    });
+                    *paused = false;
+                    record_manual_session(mins, display, &cfg.habits);
+                    let msg = format!("Awake until {clock}");
+                    push_audit(audit, "started", &msg);
+                    msg
+                }
+                None => {
+                    ok = false;
+                    "duration exceeds maximum supported time".into()
+                }
+            },
             Err(e) => {
                 ok = false;
                 e.to_string()
@@ -427,37 +552,50 @@ fn handle_daemon_command(
         ControlCommand::Extend { duration } => match parse_duration(&duration) {
             Ok(dur) => {
                 let extra_mins = (dur.as_secs() / 60).max(1) as u32;
-                match manual.as_mut() {
-                    Some(sess) => {
-                        let base = sess.ends_at.unwrap_or_else(Instant::now);
-                        sess.ends_at = Some(base.max(Instant::now()) + dur);
-                        sess.total_duration_mins += extra_mins;
-                        sess.warned_pre_expiry = false;
+                let base = manual
+                    .as_ref()
+                    .and_then(|s| s.ends_at)
+                    .unwrap_or_else(Instant::now)
+                    .max(Instant::now());
+                match base.checked_add(dur) {
+                    Some(new_ends) => {
+                        match manual.as_mut() {
+                            Some(sess) => {
+                                sess.ends_at = Some(new_ends);
+                                sess.total_duration_mins =
+                                    sess.total_duration_mins.saturating_add(extra_mins);
+                                sess.warned_pre_expiry = false;
+                            }
+                            None => {
+                                *manual = Some(ManualSession {
+                                    ends_at: Some(new_ends),
+                                    total_duration_mins: extra_mins,
+                                    keep_display_on: !cfg.general.allow_screen_off_default,
+                                    warned_pre_expiry: false,
+                                });
+                            }
+                        }
+                        let msg = format!("Extended wakeup by {}", humantime::format_duration(dur));
+                        push_audit(audit, "extended", &msg);
+                        if cfg.bot.notify_on_start {
+                            send_bot_event_async(
+                                &cfg.bot,
+                                BotEventPayload {
+                                    event: "session_extended".into(),
+                                    title: "wakey extended".into(),
+                                    message: msg.clone(),
+                                    actions: vec!["status".into(), "stop".into()],
+                                    timestamp: Local::now(),
+                                },
+                            );
+                        }
+                        msg
                     }
                     None => {
-                        *manual = Some(ManualSession {
-                            ends_at: Some(Instant::now() + dur),
-                            total_duration_mins: extra_mins,
-                            keep_display_on: !cfg.general.allow_screen_off_default,
-                            warned_pre_expiry: false,
-                        });
+                        ok = false;
+                        "duration exceeds maximum supported time".into()
                     }
                 }
-                let msg = format!("Extended wakeup by {}", humantime::format_duration(dur));
-                push_audit(audit, "extended", &msg);
-                if cfg.bot.notify_on_start {
-                    send_bot_event_async(
-                        &cfg.bot,
-                        BotEventPayload {
-                            event: "session_extended".into(),
-                            title: "wakey extended".into(),
-                            message: msg.clone(),
-                            actions: vec!["status".into(), "stop".into()],
-                            timestamp: Local::now(),
-                        },
-                    );
-                }
-                msg
             }
             Err(e) => {
                 ok = false;
@@ -472,7 +610,10 @@ fn handle_daemon_command(
         }
     };
 
-    let snap_now = shared_snapshot.lock().unwrap().clone();
+    let snap_now = shared_snapshot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let resp = IpcResponse {
         ok,
         message,
@@ -481,7 +622,7 @@ fn handle_daemon_command(
     let _ = reply_tx.send(serde_json::to_string(&resp).unwrap_or_default());
 }
 
-fn record_manual_session(duration_minutes: u32, keep_display: bool) {
+fn record_manual_session(duration_minutes: u32, keep_display: bool, habits: &HabitConfig) {
     let now = Local::now();
     let rec = SessionRecord {
         timestamp: now,
@@ -491,5 +632,10 @@ fn record_manual_session(duration_minutes: u32, keep_display: bool) {
         keep_display,
         source: "manual".into(),
     };
-    let _ = append_record(&default_history_path(), &rec);
+    let _ = append_record_with_retention(
+        &default_history_path(),
+        &rec,
+        habits.retention_days,
+        habits.max_history_bytes,
+    );
 }

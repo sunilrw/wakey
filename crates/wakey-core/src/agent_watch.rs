@@ -153,12 +153,20 @@ impl AgentWatcher {
         results
     }
 
-    /// Evaluates whether Agent Watch should currently keep the machine awake (including grace period).
-    pub fn evaluate(&mut self, cfg: &AgentWatchConfig) -> Option<String> {
+    pub fn clear_cooldown(&mut self) {
+        self.last_active_at = None;
+        self.last_active_label = None;
+    }
+
+    /// Evaluates whether Agent Watch should currently keep the machine awake using a prior `scan()` result.
+    pub fn evaluate_detected(
+        &mut self,
+        cfg: &AgentWatchConfig,
+        detected: &[DetectedAgent],
+    ) -> Option<String> {
         if !cfg.enabled {
             return None;
         }
-        let detected = self.scan(cfg);
         if let Some(active) = detected.iter().find(|d| d.is_actively_working) {
             self.last_active_at = Some(Instant::now());
             self.last_active_label = Some(active.name.clone());
@@ -168,12 +176,20 @@ impl AgentWatcher {
         if let (Some(last), Some(label)) = (self.last_active_at, self.last_active_label.as_ref()) {
             let grace = Duration::from_secs(u64::from(cfg.grace_period_minutes) * 60);
             if last.elapsed() < grace {
-                let rem = (grace - last.elapsed()).as_secs() / 60 + 1;
-                return Some(format!("Agent cooldown ({label}, ~{rem}m left)"));
+                return Some(format!("Agent cooldown: {label}"));
             }
         }
 
         None
+    }
+
+    /// Evaluates whether Agent Watch should currently keep the machine awake (including grace period).
+    pub fn evaluate(&mut self, cfg: &AgentWatchConfig) -> Option<String> {
+        if !cfg.enabled {
+            return None;
+        }
+        let detected = self.scan(cfg);
+        self.evaluate_detected(cfg, &detected)
     }
 }
 

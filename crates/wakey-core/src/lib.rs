@@ -5,6 +5,7 @@ pub mod daemon;
 pub mod habits;
 pub mod ipc;
 pub mod notify;
+pub mod peers;
 pub mod power;
 pub mod process;
 pub mod scheduler;

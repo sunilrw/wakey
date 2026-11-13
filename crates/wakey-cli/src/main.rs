@@ -15,11 +15,45 @@ use wakey_core::power::{battery_status, PowerGuard, PowerOptions};
 use wakey_core::process::{run_and_wait, wait_for_pid};
 use wakey_core::time_parse::{duration_until_clock, parse_duration};
 
+const BANNER: &str = r#"
+                  _               
+ __      ____ _ _| | _____ _   _  
+ \ \ /\ / / _` | |/ / _ \ | | | 
+  \ V  V / (_| |   <  __/ |_| | 
+   \_/\_/ \__,_|_|\_\___|\__, | 
+                         |___/  (Beta)
+  Built by Sunil Warrier — Smart Cross-Platform Keep-Awake
+"#;
+
+const FULL_HELP_EXAMPLES: &str = r#"EXAMPLES:
+  wakey                          Keep system awake (screen can turn off) until Ctrl+C
+  wakey -d -t 2h                 Keep system + screen awake for 2 hours
+  wakey --until 18:30            Stay awake until 18:30 local time
+  wakey -- cargo build --release Stay awake while a command runs (preserves exit code)
+  wakey -w 12345                 Stay awake while PID 12345 is running
+  wakey daemon                   Run background daemon (schedules, agents, habits, IPC)
+  wakey status                   Show current wake state, trigger, battery & agents
+  wakey extend 30m               Extend active wake session by 30 minutes
+  wakey pause / resume / stop    Pause auto-watch, resume, or stop wake locks now
+  wakey schedule list            List daily & weekly wake schedules
+  wakey schedule add --name Work --days mon-fri --start 09:00 --end 18:00
+  wakey agents                   Show currently detected AI agents / watched processes
+  wakey habits                   Show learned 90-day usage habits (daily/weekday/weekend)
+  wakey doctor                   Run diagnostics on OS power assertions, battery & config
+
+CREDITS:
+  Built by Sunil Warrier (Beta Open Source — MIT License)
+  Source & Releases: https://github.com/sunilrw/wakey"#;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "wakey",
-    version,
-    about = "Cross-platform caffeinate parity with smart schedules, AI agent detection, and habit learning"
+    version = "0.1.0-beta",
+    author = "Sunil Warrier",
+    before_help = BANNER,
+    about = "Cross-platform caffeinate parity with smart schedules, AI agent detection, and habit learning (Beta)",
+    long_about = "Cross-platform caffeinate replacement for macOS, Windows, and Linux with AI agent detection, 90-day habit learning, morning RTC wake, remote PC pairing, and a Grok/bot HTTP bridge.",
+    after_help = FULL_HELP_EXAMPLES
 )]
 struct Cli {
     #[command(subcommand)]
@@ -122,7 +156,7 @@ fn main() -> Result<()> {
     }
 
     let options = PowerOptions {
-        prevent_system_sleep: true,
+        prevent_system_sleep: cli.system || true,
         prevent_display_sleep: cli.display,
         allow_away_mode: cli.away,
     };
@@ -166,6 +200,7 @@ fn main() -> Result<()> {
 
     if let Some((program, args)) = cli.command.split_first() {
         let code = run_and_wait(program, args)?;
+        drop(_guard);
         std::process::exit(code);
     }
 
@@ -346,6 +381,16 @@ fn handle_subcommand(sub: Commands) -> Result<()> {
     }
 }
 
+fn validate_hhmm(raw: &str) -> Result<()> {
+    let trimmed = raw.trim();
+    if trimmed.len() != 5 || trimmed.as_bytes()[2] != b':' {
+        bail!("invalid time '{raw}' (expected 24-hour HH:MM, e.g. '09:00' or '23:30')");
+    }
+    chrono::NaiveTime::parse_from_str(trimmed, "%H:%M")
+        .with_context(|| format!("invalid time '{raw}' (expected 24-hour HH:MM)"))?;
+    Ok(())
+}
+
 fn handle_schedule(action: ScheduleAction) -> Result<()> {
     let mut cfg = Config::load_or_default()?;
     match action {
@@ -373,6 +418,8 @@ fn handle_schedule(action: ScheduleAction) -> Result<()> {
             if parsed_days.is_empty() {
                 bail!("could not parse days '{days}' (try 'mon-fri', 'daily', or 'sat,sun')");
             }
+            validate_hhmm(&start).context("invalid --start time")?;
+            validate_hhmm(&end).context("invalid --end time")?;
             cfg.schedules.retain(|s| s.name != name);
             cfg.schedules.push(ScheduleRule {
                 name: name.clone(),
@@ -403,4 +450,25 @@ fn handle_schedule(action: ScheduleAction) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_hhmm;
+
+    #[test]
+    fn validate_hhmm_accepts_valid_times() {
+        assert!(validate_hhmm("00:00").is_ok());
+        assert!(validate_hhmm("09:30").is_ok());
+        assert!(validate_hhmm("23:59").is_ok());
+    }
+
+    #[test]
+    fn validate_hhmm_rejects_invalid_times() {
+        assert!(validate_hhmm("").is_err());
+        assert!(validate_hhmm("9:00").is_err());
+        assert!(validate_hhmm("24:00").is_err());
+        assert!(validate_hhmm("12:60").is_err());
+        assert!(validate_hhmm("abc").is_err());
+    }
 }

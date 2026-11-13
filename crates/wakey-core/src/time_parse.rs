@@ -11,13 +11,23 @@ pub enum TimeParseError {
     InvalidClockTime(String),
 }
 
+const MAX_DURATION_SECS: u64 = 365 * 24 * 3600;
+
 /// Parses either a plain integer (seconds, matching `caffeinate -t`) or a human duration (`30m`, `1h30m`).
 pub fn parse_duration(input: &str) -> Result<Duration, TimeParseError> {
     let trimmed = input.trim();
-    if let Ok(secs) = trimmed.parse::<u64>() {
-        return Ok(Duration::from_secs(secs));
+    let dur = if let Ok(secs) = trimmed.parse::<u64>() {
+        Duration::from_secs(secs)
+    } else {
+        humantime::parse_duration(trimmed)
+            .map_err(|_| TimeParseError::InvalidDuration(input.to_string()))?
+    };
+    if dur.as_secs() > MAX_DURATION_SECS {
+        return Err(TimeParseError::InvalidDuration(format!(
+            "{input} (max 365 days)"
+        )));
     }
-    humantime::parse_duration(trimmed).map_err(|_| TimeParseError::InvalidDuration(input.to_string()))
+    Ok(dur)
 }
 
 /// Parses a local 24-hour clock time (`HH:MM` or `HH:MM:SS`) and returns the duration from now until
@@ -58,6 +68,7 @@ mod tests {
     #[test]
     fn rejects_bad_durations() {
         assert!(parse_duration("abc").is_err());
+        assert!(parse_duration("18446744073709551615").is_err());
     }
 
     #[test]

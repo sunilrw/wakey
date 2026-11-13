@@ -1,18 +1,28 @@
-use std::process::Command;
+use std::process::{Child, Command};
+
+fn reap_child(mut child: Child) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+}
 
 /// Sends a non-blocking OS desktop notification.
 pub fn send_desktop_notification(title: &str, body: &str) {
     #[cfg(target_os = "macos")]
     {
-        let esc_title = title.replace('"', "\\\"");
-        let esc_body = body.replace('"', "\\\"");
+        let esc_title = title.replace('\\', "\\\\").replace('"', "\\\"");
+        let esc_body = body.replace('\\', "\\\\").replace('"', "\\\"");
         let script = format!("display notification \"{esc_body}\" with title \"{esc_title}\"");
-        let _ = Command::new("osascript").args(["-e", &script]).spawn();
+        if let Ok(child) = Command::new("osascript").args(["-e", &script]).spawn() {
+            reap_child(child);
+        }
     }
 
     #[cfg(target_os = "linux")]
     {
-        let _ = Command::new("notify-send").args([title, body]).spawn();
+        if let Ok(child) = Command::new("notify-send").args([title, body]).spawn() {
+            reap_child(child);
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -28,8 +38,11 @@ pub fn send_desktop_notification(title: &str, body: &str) {
              $toast = [Windows.UI.Notifications.ToastNotification]::new($xml); \
              [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('wakey').Show($toast);"
         );
-        let _ = Command::new("powershell")
+        if let Ok(child) = Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &ps])
-            .spawn();
+            .spawn()
+        {
+            reap_child(child);
+        }
     }
 }

@@ -11,20 +11,27 @@
     "windows": [
       {
         "title": "wakey",
-        "width": 980,
-        "height": 680,
-        "resizable": true
+        "width": 395,
+        "height": 740,
+        "minWidth": 350,
+        "minHeight": 160,
+        "resizable": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
     "icon": [
-      "icons/icon.png"
+      "icons/icon.png",
+      "icons/icon.ico"
     ]
   }
 }

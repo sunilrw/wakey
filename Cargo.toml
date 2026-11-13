@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/wakey-core",
     "crates/wakey-cli",
+    "crates/wakey-relay",
     "app/src-tauri",
 ]
 
@@ -10,7 +11,9 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Cross-platform caffeinate alternative with smart schedules, AI agent detection, and habit learning"
+authors = ["Sunil Warrier"]
+repository = "https://github.com/sunilrw/wakey"
+description = "Cross-platform caffeinate alternative with smart schedules, AI agent detection, and habit learning (Beta)"
 
 [workspace.dependencies]
 chrono = { version = "0.4", features = ["serde"] }

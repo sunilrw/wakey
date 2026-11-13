@@ -1,7 +1,10 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
+
+const MAX_IPC_LINE_BYTES: u64 = 64 * 1024;
+const IPC_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +26,10 @@ pub struct DaemonSnapshot {
     pub reason: Option<String>,
     pub keep_display_on: bool,
     pub remaining_seconds: Option<u64>,
+    #[serde(default)]
+    pub trigger_kind: String,
+    #[serde(default)]
+    pub sleep_at_clock: Option<String>,
     pub battery: Option<BatteryInfo>,
     pub detected_agents: Vec<DetectedAgent>,
     pub active_schedule: Option<String>,
@@ -53,10 +60,18 @@ pub struct IpcResponse {
 
 #[cfg(unix)]
 fn socket_path() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        return std::path::PathBuf::from(dir).join("wakey.sock");
+    use std::os::unix::fs::PermissionsExt;
+    let base = if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+        std::path::PathBuf::from(dir).join("wakey")
+    } else {
+        dirs::data_local_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("wakey")
+    };
+    if std::fs::create_dir_all(&base).is_ok() {
+        let _ = std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700));
     }
-    std::env::temp_dir().join("wakey.sock")
+    base.join("wakey.sock")
 }
 
 #[cfg(windows)]
@@ -65,14 +80,17 @@ const WINDOWS_IPC_ADDR: &str = "127.0.0.1:47842";
 pub fn spawn_ipc_server(cmd_tx: Sender<(ControlCommand, Sender<String>)>) -> std::io::Result<()> {
     #[cfg(unix)]
     {
+        use std::os::unix::fs::PermissionsExt;
         use std::os::unix::net::UnixListener;
         let path = socket_path();
         if path.exists() {
             let _ = std::fs::remove_file(&path);
         }
         let listener = UnixListener::bind(&path)?;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
+                let _ = stream.set_read_timeout(Some(IPC_READ_TIMEOUT));
                 handle_stream(stream, &cmd_tx);
             }
         });
@@ -85,6 +103,7 @@ pub fn spawn_ipc_server(cmd_tx: Sender<(ControlCommand, Sender<String>)>) -> std
         let listener = TcpListener::bind(WINDOWS_IPC_ADDR)?;
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
+                let _ = stream.set_read_timeout(Some(IPC_READ_TIMEOUT));
                 handle_stream(stream, &cmd_tx);
             }
         });
@@ -96,9 +115,9 @@ fn handle_stream<S: std::io::Read + std::io::Write>(
     mut stream: S,
     cmd_tx: &Sender<(ControlCommand, Sender<String>)>,
 ) {
-    let mut reader = BufReader::new(&mut stream);
+    let mut reader = BufReader::new(&mut stream).take(MAX_IPC_LINE_BYTES + 1);
     let mut line = String::new();
-    if reader.read_line(&mut line).is_err() {
+    if reader.read_line(&mut line).is_err() || line.len() as u64 > MAX_IPC_LINE_BYTES {
         return;
     }
     let Ok(cmd) = serde_json::from_str::<ControlCommand>(line.trim()) else {
@@ -161,4 +180,48 @@ pub fn send_ipc_command(cmd: &ControlCommand) -> Result<IpcResponse, String> {
             })
         })
         .map_err(|e| format!("invalid response from daemon: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_serde_defaults_missing_trigger_fields() {
+        let legacy_json = r#"{
+            "awake": true,
+            "paused": false,
+            "reason": "Manual session",
+            "keep_display_on": false,
+            "remaining_seconds": 60,
+            "battery": null,
+            "detected_agents": [],
+            "active_schedule": null,
+            "recent_audit": []
+        }"#;
+        let snap: DaemonSnapshot = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(snap.trigger_kind, "");
+        assert_eq!(snap.sleep_at_clock, None);
+    }
+
+    #[test]
+    fn snapshot_serde_roundtrip_with_trigger_fields() {
+        let snap = DaemonSnapshot {
+            awake: true,
+            paused: false,
+            reason: Some("Manual session".into()),
+            keep_display_on: true,
+            remaining_seconds: Some(3600),
+            trigger_kind: "manual".into(),
+            sleep_at_clock: Some("13:45".into()),
+            battery: None,
+            detected_agents: vec![],
+            active_schedule: None,
+            recent_audit: vec![],
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        let decoded: DaemonSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.trigger_kind, "manual");
+        assert_eq!(decoded.sleep_at_clock.as_deref(), Some("13:45"));
+    }
 }

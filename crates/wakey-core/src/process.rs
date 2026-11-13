@@ -49,9 +49,13 @@ fn wait_for_pid_unix(pid: u32, stop_flag: &Arc<AtomicBool>) -> Result<(), Proces
         let alive = Command::new("kill")
             .args(["-0", &pid_str])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
+            .output()
+            .map(|out| {
+                out.status.success()
+                    || String::from_utf8_lossy(&out.stderr)
+                        .to_lowercase()
+                        .contains("permitted")
+            })
             .unwrap_or(false);
 
         if !alive {

@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
@@ -5,7 +6,9 @@ use std::time::Duration;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
-use crate::config::BotConfig;
+use crate::config::{constant_time_eq, BotConfig};
+
+const MAX_HTTP_BODY_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BotEventPayload {
@@ -25,6 +28,7 @@ pub enum ControlCommand {
     Resume,
     AwakeFor { duration: String, display: bool },
     AwakeUntil { clock: String, display: bool },
+    SetDisplay { display: bool },
     Extend { duration: String },
     SkipSchedule { name: String },
 }
@@ -107,25 +111,27 @@ pub fn spawn_http_bridge(
     let server = tiny_http::Server::http(&cfg.listen_addr)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
-    let auth_token = cfg.auth_token.clone();
+    let auth_token = cfg.auth_token.trim().to_string();
 
     thread::spawn(move || {
         for mut request in server.incoming_requests() {
-            if !auth_token.is_empty() {
-                let authorized = request
+            let expected = format!("Bearer {auth_token}");
+            let authorized = !auth_token.is_empty()
+                && request
                     .headers()
                     .iter()
                     .find(|h| h.field.equiv("Authorization"))
-                    .map(|h| h.value.as_str() == format!("Bearer {auth_token}"))
+                    .map(|h| constant_time_eq(h.value.as_str(), &expected))
                     .unwrap_or(false);
-                if !authorized {
-                    let resp = tiny_http::Response::from_string(
-                        r#"{"ok":false,"message":"unauthorized"}"#,
-                    )
-                    .with_status_code(401);
-                    let _ = request.respond(resp);
-                    continue;
-                }
+            if !authorized {
+                let msg = if auth_token.is_empty() {
+                    r#"{"ok":false,"message":"bot bridge auth_token is not configured"}"#
+                } else {
+                    r#"{"ok":false,"message":"unauthorized"}"#
+                };
+                let resp = tiny_http::Response::from_string(msg).with_status_code(401);
+                let _ = request.respond(resp);
+                continue;
             }
 
             let url = request.url().to_string();
@@ -143,8 +149,43 @@ pub fn spawn_http_bridge(
             }
 
             if method == "POST" && url == "/command" {
+                if request
+                    .body_length()
+                    .map(|len| len > MAX_HTTP_BODY_BYTES)
+                    .unwrap_or(false)
+                {
+                    let _ = request.respond(
+                        tiny_http::Response::from_string(
+                            r#"{"ok":false,"message":"payload too large"}"#,
+                        )
+                        .with_status_code(413),
+                    );
+                    continue;
+                }
                 let mut body = String::new();
-                let _ = request.as_reader().read_to_string(&mut body);
+                if request
+                    .as_reader()
+                    .take((MAX_HTTP_BODY_BYTES + 1) as u64)
+                    .read_to_string(&mut body)
+                    .is_err()
+                {
+                    let _ = request.respond(
+                        tiny_http::Response::from_string(
+                            r#"{"ok":false,"message":"failed to read body"}"#,
+                        )
+                        .with_status_code(400),
+                    );
+                    continue;
+                }
+                if body.len() > MAX_HTTP_BODY_BYTES {
+                    let _ = request.respond(
+                        tiny_http::Response::from_string(
+                            r#"{"ok":false,"message":"payload too large"}"#,
+                        )
+                        .with_status_code(413),
+                    );
+                    continue;
+                }
                 let parsed_req: Result<BotCommandRequest, _> = serde_json::from_str(&body);
                 let reply_json = match parsed_req {
                     Ok(req) => match parse_bot_text_command(&req.command) {

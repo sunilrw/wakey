@@ -1,7 +1,8 @@
 use std::ffi::{c_char, c_void, CString};
 use std::process::Command;
 
-use super::{BatteryStatus, PowerError, PowerOptions};
+use super::{build_macos_pmset_command, format_macos_pmset_days, parse_clock_hhmm, BatteryStatus, PowerError, PowerOptions};
+use crate::config::WeekdayShort;
 
 type CFAllocatorRef = *const c_void;
 type CFStringRef = *const c_void;
@@ -116,4 +117,51 @@ pub fn battery_status() -> Option<BatteryStatus> {
         on_ac_power,
         percent,
     })
+}
+
+fn run_osascript_privileged(shell_cmd: &str) -> Result<(), String> {
+    // `shell_cmd` is strictly generated from validated ASCII tokens (`pmset repeat ...`).
+    let script = format!("do shell script \"{shell_cmd}\" with administrator privileges");
+    let output = Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|e| format!("failed to launch osascript: {e}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.contains("User canceled") || stderr.contains("-128") {
+        Err("Administrator prompt was canceled.".to_string())
+    } else if stderr.is_empty() {
+        Err(format!("osascript exited with status {}", output.status))
+    } else {
+        Err(stderr)
+    }
+}
+
+pub fn schedule_morning_wake(days: &[WeekdayShort], clock_hhmm: &str) -> Result<String, String> {
+    let cmd = build_macos_pmset_command(days, clock_hhmm)?;
+    let pmset_days = format_macos_pmset_days(days)?;
+    let (h, m) = parse_clock_hhmm(clock_hhmm)?;
+
+    match run_osascript_privileged(&cmd) {
+        Ok(()) => Ok(format!(
+            "Scheduled macOS hardware wake ({pmset_days} at {h:02}:{m:02})."
+        )),
+        Err(reason) => Err(format!(
+            "{reason} To schedule manually in Terminal, run: sudo {cmd}"
+        )),
+    }
+}
+
+pub fn clear_morning_wake() -> Result<String, String> {
+    let cmd = "pmset repeat cancel";
+    match run_osascript_privileged(cmd) {
+        Ok(()) => Ok("Cleared macOS hardware wake schedule.".to_string()),
+        Err(reason) => Err(format!(
+            "{reason} To clear manually in Terminal, run: sudo {cmd}"
+        )),
+    }
 }

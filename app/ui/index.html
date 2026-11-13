@@ -3,265 +3,531 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>wakey — Smart Keep-Awake Dashboard</title>
+    <title>wakey</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="layout">
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-dot" id="brandDot"></div>
-          <div>
-            <div class="brand-name">wakey</div>
-            <div class="brand-sub" id="batteryBadge">Checking power…</div>
+    <div class="popover-shell">
+      <!-- TOP POPOVER NOTCH & DRAG BAR -->
+      <header class="popover-topbar" data-tauri-drag-region>
+        <div class="topbar-left" data-tauri-drag-region>
+          <span class="topbar-wordmark" data-tauri-drag-region>wakey</span>
+          <span class="topbar-status" id="topbarStatus" data-tauri-drag-region>
+            <span class="topbar-dot" id="topbarDot" data-tauri-drag-region></span>
+            <span id="topbarStatusText" data-tauri-drag-region>Sleep OK</span>
+          </span>
+        </div>
+        <div class="topbar-actions">
+          <button
+            class="topbar-btn"
+            id="btnHidePopover"
+            data-tooltip="Hide this popover window (wakey stays active in the menu bar)"
+            aria-label="Hide popover"
+          >
+            ✕
+          </button>
+          <button
+            class="topbar-btn danger"
+            id="btnQuitApp"
+            data-tooltip="Quit wakey completely and restore normal OS sleep rules"
+            aria-label="Quit wakey"
+          >
+            ⏻
+          </button>
+        </div>
+      </header>
+
+      <!-- PRIMARY COMPUTER CARD -->
+      <div class="device-card" id="localDeviceCard">
+        <div class="device-pill" id="localPill">
+          <div class="device-pill-left">
+            <span class="device-icon">💻</span>
+            <div class="device-title-wrap">
+              <div class="device-name-row">
+                <span class="device-name" id="localDeviceName">This Computer</span>
+                <span class="power-chip" id="batteryChip">—</span>
+              </div>
+              <div class="device-status" id="localStatusText">Normal Sleep Allowed</div>
+            </div>
+          </div>
+          <div class="device-pill-actions" style="display:flex;align-items:center;gap:8px;">
+            <button
+              class="collapse-chevron"
+              id="btnCollapseLocal"
+              style="width:auto;padding:4px 8px;margin:0;"
+              data-tooltip="Collapse or expand This Computer controls"
+              aria-label="Collapse or expand controls"
+            >
+              ⌃
+            </button>
+            <label
+              class="mac-switch"
+              id="masterSwitchLabel"
+              data-tooltip="Master toggle: ON keeps this computer awake for the slider duration; OFF allows normal sleep"
+            >
+              <input type="checkbox" id="localMasterToggle" />
+              <span class="mac-switch-track"></span>
+            </label>
           </div>
         </div>
 
-        <nav class="nav">
-          <button class="nav-btn active" data-view="home">Home</button>
-          <button class="nav-btn" data-view="schedules">Schedules</button>
-          <button class="nav-btn" data-view="agents">Agent Watch</button>
-          <button class="nav-btn" data-view="habits">Habits</button>
-          <button class="nav-btn" data-view="settings">Settings</button>
-        </nav>
+        <div class="device-body" id="localDeviceBody">
+          <!-- Pause notice when user turned switch off during active agent/schedule -->
+          <div class="pause-banner hidden" id="pauseBanner">
+            <span>Auto-watch is paused</span>
+            <button
+              class="mini-link"
+              id="btnResumeAuto"
+              data-tooltip="Resume automatic AI agent and schedule wake rules"
+            >
+              Resume
+            </button>
+          </div>
 
-        <div class="sidebar-footer">
-          <div class="pill" id="statusPill">Loading…</div>
+          <!-- CRYSTAL-CLEAR STATUS BOX -->
+          <div class="status-box state-idle" id="localStatusBox">
+            <div class="status-line">
+              <span class="status-key">STATE:</span>
+              <span class="status-val status-state-val" id="statusStateVal">🌙 NORMAL SLEEP ALLOWED</span>
+            </div>
+            <div class="status-line">
+              <span class="status-key">TRIGGERED BY:</span>
+              <span class="status-val" id="statusTriggerVal">None — Normal OS sleep rules apply</span>
+            </div>
+            <div class="status-line">
+              <span class="status-key">RETURNS TO SLEEP:</span>
+              <span class="status-val" id="statusSleepVal">Sleeping normally now</span>
+            </div>
+          </div>
+
+          <!-- EXPLICIT ACTION BAR -->
+          <div class="action-bar">
+            <button
+              class="action-pill primary"
+              id="btnStartWake"
+              data-tooltip="Start keeping this computer awake for the duration chosen on the slider"
+            >
+              ▶ Start 2h
+            </button>
+            <button
+              class="action-pill"
+              id="btnExtend30"
+              data-tooltip="Extend the current wake session by 30 minutes (or start a 30m session)"
+            >
+              +30m
+            </button>
+            <button
+              class="action-pill"
+              id="btnPauseResume"
+              data-tooltip="Pause wake locks (including schedules and AI agents) so the computer can sleep"
+            >
+              ⏸ Pause
+            </button>
+            <button
+              class="action-pill danger"
+              id="btnStopWake"
+              data-tooltip="Stop the wake timer and immediately return to normal OS sleep"
+            >
+              ⏹ Stop (Sleep Now)
+            </button>
+          </div>
+
+          <!-- Duration Slider -->
+          <div class="slider-block">
+            <div class="slider-header">
+              <span class="slider-label">Wake Duration</span>
+              <button
+                class="value-pill"
+                id="durationBadge"
+                data-tooltip="Click to enter a custom duration (e.g. 5h 30m) or clock time (e.g. until 23:30)"
+              >
+                2h 00m
+              </button>
+            </div>
+            <div class="slider-row">
+              <span class="slider-glyph">⏱</span>
+              <input
+                type="range"
+                id="durationSlider"
+                class="bd-slider"
+                min="0"
+                max="12"
+                step="1"
+                value="5"
+                data-tooltip="Drag to select wake duration from 15m up to ∞ Forever"
+              />
+            </div>
+            <div class="slider-ticks">
+              <span>15m</span>
+              <span>2h</span>
+              <span>6h</span>
+              <span>12h</span>
+              <span>∞</span>
+            </div>
+
+            <!-- Inline custom time input -->
+            <div class="custom-time-row hidden" id="customTimeRow">
+              <input
+                type="text"
+                id="customTimeInput"
+                placeholder="e.g. 5h 30m or until 23:30"
+              />
+              <button
+                class="btn-pill blue"
+                id="btnApplyCustomTime"
+                data-tooltip="Apply this custom wake duration or end clock time"
+              >
+                Set
+              </button>
+            </div>
+          </div>
+
+          <!-- Keep Screen On Toggle -->
+          <div class="slider-block compact">
+            <div class="row-control">
+              <div class="row-left">
+                <span class="row-icon">☀️</span>
+                <div>
+                  <div class="row-title">Keep Screen On</div>
+                  <div class="row-sub" id="screenSubText">Screen turns off normally</div>
+                </div>
+              </div>
+              <label
+                class="mac-switch small"
+                data-tooltip="Keep Screen On: ON prevents your display from dimming/sleeping; OFF only keeps CPU awake"
+              >
+                <input type="checkbox" id="localKeepScreen" />
+                <span class="mac-switch-track"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <!-- Expandable BetterDisplay-style Menu Rows -->
+          <div class="menu-list">
+            <div class="menu-row-wrap">
+              <div
+                class="menu-row"
+                data-drawer="agents"
+                data-tooltip="Auto-keep your computer awake while watched AI agents (Cursor, Claude, etc.) are actively working"
+              >
+                <div class="row-left">
+                  <span class="row-icon">🤖</span>
+                  <span class="row-title">AI Agent Watch</span>
+                </div>
+                <div class="row-right">
+                  <span class="row-meta" id="agentSummaryMeta">0 active</span>
+                  <span class="chevron">›</span>
+                </div>
+              </div>
+              <div class="drawer hidden" id="drawer-agents">
+                <div class="drawer-controls">
+                  <label class="check-line">
+                    <input type="checkbox" id="awEnabled" />
+                    <span>Auto-wake when AI agents work</span>
+                  </label>
+                  <label class="check-line">
+                    <input type="checkbox" id="awKeepDisplay" />
+                    <span>Keep screen on for agents</span>
+                  </label>
+                  <div class="inline-num">
+                    <span>Cooldown (min)</span>
+                    <input type="number" id="awGrace" min="0" max="120" />
+                    <button
+                      class="btn-pill"
+                      id="btnSaveAgentPolicy"
+                      data-tooltip="Save AI Agent Watch policy settings"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+                <div id="detectedAgentsList" class="mini-list"></div>
+                <div class="mini-section-title">Watched Agents</div>
+                <div id="agentPresetsList" class="mini-list"></div>
+              </div>
+            </div>
+
+            <div class="menu-row-wrap">
+              <div
+                class="menu-row"
+                data-drawer="schedules"
+                data-tooltip="Create and manage daily or weekly recurring wake schedules"
+              >
+                <div class="row-left">
+                  <span class="row-icon">📅</span>
+                  <span class="row-title">Daily &amp; Weekly Schedules</span>
+                </div>
+                <div class="row-right">
+                  <span class="row-meta" id="scheduleSummaryMeta">0 rules</span>
+                  <span class="chevron">›</span>
+                </div>
+              </div>
+              <div class="drawer hidden" id="drawer-schedules">
+                <form id="scheduleForm" class="mini-form">
+                  <input type="text" id="schedName" placeholder="Name (e.g. Workday)" required />
+                  <input type="text" id="schedDays" placeholder="mon-fri, daily, sat,sun" value="mon-fri" required />
+                  <div class="time-pair">
+                    <input type="time" id="schedStart" value="09:00" required />
+                    <span>to</span>
+                    <input type="time" id="schedEnd" value="17:30" required />
+                  </div>
+                  <div class="form-checks">
+                    <label class="check-line">
+                      <input type="checkbox" id="schedDisplay" />
+                      <span>Screen on</span>
+                    </label>
+                    <label class="check-line">
+                      <input type="checkbox" id="schedBattery" />
+                      <span>On battery</span>
+                    </label>
+                    <button type="submit" class="btn-pill blue">Add</button>
+                  </div>
+                </form>
+                <div id="schedulesList" class="mini-list"></div>
+                <div class="divider"></div>
+                <div class="mini-section-title">Morning Wake from Sleep (RTC)</div>
+                <div class="rtc-wake-row">
+                  <input type="text" id="rtcDays" placeholder="mon-fri, daily" value="mon-fri" />
+                  <input type="time" id="rtcTime" value="08:55" />
+                </div>
+                <div class="form-checks">
+                  <button
+                    type="button"
+                    class="btn-pill blue"
+                    id="btnScheduleMorningWake"
+                    data-tooltip="Schedule OS hardware/RTC wake so the computer wakes from sleep before your morning schedule"
+                  >
+                    Set Wake
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-pill"
+                    id="btnClearMorningWake"
+                    data-tooltip="Remove the scheduled OS hardware/RTC morning wake"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div class="tiny-feedback" id="rtcFeedback"></div>
+              </div>
+            </div>
+
+            <div class="menu-row-wrap">
+              <div
+                class="menu-row"
+                data-drawer="habits"
+                data-tooltip="View recurring wake habits learned from your manual sessions"
+              >
+                <div class="row-left">
+                  <span class="row-icon">💡</span>
+                  <span class="row-title">Habit Prompts</span>
+                </div>
+                <div class="row-right">
+                  <span class="row-meta" id="habitSummaryMeta">Learning</span>
+                  <span class="chevron">›</span>
+                </div>
+              </div>
+              <div class="drawer hidden" id="drawer-habits">
+                <div id="habitsList" class="mini-list"></div>
+              </div>
+            </div>
+
+            <div class="menu-row-wrap">
+              <div
+                class="menu-row"
+                data-drawer="audit"
+                data-tooltip="Inspect recent wake, pause, extend, and sleep events"
+              >
+                <div class="row-left">
+                  <span class="row-icon">📜</span>
+                  <span class="row-title">Recent Wake Activity</span>
+                </div>
+                <div class="row-right">
+                  <span class="row-meta" id="auditSummaryMeta">Log</span>
+                  <span class="chevron">›</span>
+                </div>
+              </div>
+              <div class="drawer hidden" id="drawer-audit">
+                <div id="auditList" class="mini-list"></div>
+              </div>
+            </div>
+          </div>
         </div>
-      </aside>
+      </div>
 
-      <main class="main">
-        <!-- HOME VIEW -->
-        <section class="view active" id="view-home">
-          <div class="hero-card">
-            <div class="hero-top">
+      <!-- PAIRED REMOTE COMPUTERS CONTAINER -->
+      <div id="remotePeersContainer" class="peers-stack"></div>
+
+      <!-- PAIR ANOTHER PC DRAWER -->
+      <div class="device-card hidden" id="pairDrawer">
+        <div class="device-pill">
+          <div class="device-pill-left">
+            <span class="device-icon">🔗</span>
+            <div>
+              <div class="device-name">Pair Another PC</div>
+              <div class="device-status">TeamViewer-style ID &amp; Passcode (No Login)</div>
+            </div>
+          </div>
+          <button class="btn-pill" id="btnClosePair" data-tooltip="Close pairing panel">Done</button>
+        </div>
+
+        <div class="device-body">
+          <div class="pair-box">
+            <div class="mini-section-title">1. Share This Computer</div>
+            <div class="id-grid">
               <div>
-                <div class="eyebrow">Current Power State</div>
-                <h1 id="heroState">Sleep Allowed</h1>
-                <p class="muted" id="heroReason">No active keep-awake trigger</p>
+                <div class="tiny-label">Device ID</div>
+                <div class="code-val" id="myDeviceId">—</div>
               </div>
-              <div class="countdown" id="heroCountdown">—</div>
+              <div>
+                <div class="tiny-label">Passcode</div>
+                <div class="code-val" id="myPasscode">—</div>
+              </div>
             </div>
-
-            <div class="quick-actions">
-              <button class="btn primary" data-awake="30m">30m</button>
-              <button class="btn primary" data-awake="1h">1h</button>
-              <button class="btn primary" data-awake="2h">2h</button>
-              <button class="btn" id="btnExtend30">+30m</button>
-              <button class="btn" id="btnPause">Pause</button>
-              <button class="btn danger" id="btnStop">Stop</button>
+            <div class="pair-actions">
+              <button
+                class="btn-pill blue wide"
+                id="btnCopyPairingCode"
+                data-tooltip="Copy a pairing link (wakey://pair/...) to paste on your other computer"
+              >
+                📋 Copy Pairing Code
+              </button>
+              <button
+                class="btn-pill"
+                id="btnRegenPasscode"
+                data-tooltip="Generate a new random pairing passcode for this computer"
+              >
+                🔄
+              </button>
             </div>
-
-            <div class="inline-toggle">
-              <label class="switch-row">
-                <input type="checkbox" id="quickKeepDisplay" />
-                <span>Keep screen on (prevent display off &amp; lock)</span>
-              </label>
-            </div>
+            <div class="tiny-feedback" id="copyFeedback"></div>
           </div>
 
-          <div class="grid-2">
-            <div class="card">
-              <div class="card-header">
-                <h2>Detected AI Agents</h2>
-                <span class="badge" id="agentCountBadge">0</span>
-              </div>
-              <div id="detectedAgentsList" class="list-stack muted">
-                No watched agents running right now.
-              </div>
-            </div>
-
-            <div class="card">
-              <div class="card-header">
-                <h2>Why Didn't My PC Sleep?</h2>
-                <span class="badge">Audit</span>
-              </div>
-              <div id="auditList" class="list-stack muted">
-                No recent events yet.
-              </div>
-            </div>
+          <div class="pair-box">
+            <div class="mini-section-title">2. Connect Another Computer</div>
+            <input
+              type="text"
+              id="pairInput"
+              placeholder="Paste pairing code (wakey://pair/...) or ID"
+            />
+            <input
+              type="text"
+              id="pairPasscodeInput"
+              placeholder="Passcode (only if pasting ID alone)"
+            />
+            <button
+              class="btn-pill blue wide"
+              id="btnDoPair"
+              data-tooltip="Pair with the remote computer using the code or Device ID + passcode above"
+            >
+              Pair Computer
+            </button>
+            <div class="tiny-feedback" id="pairFeedback"></div>
           </div>
-        </section>
+        </div>
+      </div>
 
-        <!-- SCHEDULES VIEW -->
-        <section class="view" id="view-schedules">
-          <div class="section-head">
+      <!-- SETTINGS DRAWER -->
+      <div class="device-card hidden" id="settingsDrawer">
+        <div class="device-pill">
+          <div class="device-pill-left">
+            <span class="device-icon">⚙️</span>
             <div>
-              <h1>Daily &amp; Weekly Schedules</h1>
-              <p class="muted">Automatically keep your machine awake during recurring hours.</p>
+              <div class="device-name">Settings &amp; VPS Relay</div>
+              <div class="device-status">Power safety, Relay &amp; Grok Bot</div>
             </div>
           </div>
+          <button class="btn-pill" id="btnCloseSettings" data-tooltip="Close settings panel">Done</button>
+        </div>
 
-          <div class="card">
-            <h2>Add Schedule</h2>
-            <form id="scheduleForm" class="form-grid">
-              <label>
-                <span>Name</span>
-                <input type="text" id="schedName" placeholder="Workday" required />
-              </label>
-              <label>
-                <span>Days</span>
-                <input type="text" id="schedDays" placeholder="mon-fri, daily, or sat,sun" value="mon-fri" required />
-              </label>
-              <label>
-                <span>Start (HH:MM)</span>
-                <input type="time" id="schedStart" value="09:00" required />
-              </label>
-              <label>
-                <span>End (HH:MM)</span>
-                <input type="time" id="schedEnd" value="17:30" required />
-              </label>
-              <label class="checkbox-inline">
-                <input type="checkbox" id="schedDisplay" />
-                <span>Keep screen on</span>
-              </label>
-              <label class="checkbox-inline">
-                <input type="checkbox" id="schedBattery" />
-                <span>Allow on battery</span>
-              </label>
-              <div class="form-actions">
-                <button type="submit" class="btn primary">Save Schedule</button>
+        <div class="device-body">
+          <div class="mini-section-title">Power &amp; Habits</div>
+          <div class="drawer-controls">
+            <label class="check-line">
+              <input type="checkbox" id="setPauseBattery" />
+              <span>Pause schedules/agents on battery</span>
+            </label>
+            <div class="inline-num">
+              <span>Min Battery %</span>
+              <input type="number" id="setMinBattery" min="5" max="95" />
+            </div>
+            <div class="inline-num">
+              <span>Pre-expiry warning (min)</span>
+              <input type="number" id="setWarnMins" min="0" max="60" />
+            </div>
+            <label class="check-line">
+              <input type="checkbox" id="setHabitsEnabled" />
+              <span>Enable habit learning prompts</span>
+            </label>
+          </div>
+
+          <div class="mini-section-title">This PC &amp; Cross-Network VPS Relay</div>
+          <div class="drawer-controls">
+            <input type="text" id="setDeviceName" placeholder="Computer Name (e.g. Home Mac)" />
+            <input type="url" id="setRelayUrl" placeholder="VPS Relay URL (e.g. http://1.2.3.4:7845)" />
+          </div>
+
+          <div class="mini-section-title">Grok Bot Webhook</div>
+          <div class="drawer-controls">
+            <label class="check-line">
+              <input type="checkbox" id="botEnabled" />
+              <span>Enable Grok Bot bridge</span>
+            </label>
+            <input type="url" id="botWebhook" placeholder="Outbound Webhook URL (optional)" />
+            <input type="password" id="botSecret" placeholder="Webhook Secret (optional)" />
+            <input type="text" id="botListen" placeholder="Inbound HTTP (127.0.0.1:7842)" />
+            <details class="bot-help">
+              <summary>How do Webhook URL &amp; Secret work?</summary>
+              <div class="bot-help-body">
+                <div><strong>Inbound HTTP</strong> (<code>127.0.0.1:7842</code>): Lets a local bot, script, or Apple Shortcut control wakey via <code>GET /status</code> and <code>POST /command</code> (e.g. <code>{"cmd":"awake_for","duration":"2h"}</code>).</div>
+                <div><strong>Outbound Webhook URL</strong>: Optional URL (e.g. n8n, Slack, Discord, or Grok relay) where wakey POSTs JSON notifications when a wake session starts, warns before expiry, or stops. Leave blank if unused.</div>
+                <div><strong>Webhook Secret</strong>: Any shared secret string you choose; wakey sends it in the <code>X-Wakey-Secret</code> HTTP header so your webhook server can verify requests are from wakey.</div>
               </div>
-            </form>
+            </details>
           </div>
 
-          <div class="card">
-            <h2>Configured Schedules</h2>
-            <div id="schedulesList" class="list-stack muted">No schedules yet.</div>
-          </div>
-        </section>
+          <button
+            class="btn-pill blue wide"
+            id="btnSaveSettings"
+            data-tooltip="Save battery safety, relay URL, and Grok Bot settings"
+          >
+            Save All Settings
+          </button>
+          <div class="tiny-feedback" id="settingsFeedback"></div>
+        </div>
+      </div>
 
-        <!-- AGENT WATCH VIEW -->
-        <section class="view" id="view-agents">
-          <div class="section-head">
-            <div>
-              <h1>AI Agent &amp; Tool Watch</h1>
-              <p class="muted">Stay awake while popular AI agents or local LLMs are working, while letting your screen turn off.</p>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="settings-grid">
-              <label class="switch-row">
-                <input type="checkbox" id="awEnabled" />
-                <span>Enable Agent Watch</span>
-              </label>
-              <label class="switch-row">
-                <input type="checkbox" id="awKeepDisplay" />
-                <span>Keep screen on while agent runs</span>
-              </label>
-              <label class="switch-row">
-                <input type="checkbox" id="awOnBattery" />
-                <span>Allow Agent Watch on battery</span>
-              </label>
-              <label>
-                <span>Grace Period After Finish (minutes)</span>
-                <input type="number" id="awGrace" min="0" max="120" />
-              </label>
-              <label>
-                <span>Active CPU Threshold (%)</span>
-                <input type="number" id="awCpu" min="0.1" max="50" step="0.1" />
-              </label>
-            </div>
-            <div class="form-actions" style="margin-top: 12px;">
-              <button class="btn primary" id="btnSaveAgentWatch">Save Agent Settings</button>
-            </div>
-          </div>
-
-          <div class="card">
-            <h2>Built-in AI Agent Presets</h2>
-            <div id="agentPresetsList" class="list-stack"></div>
-          </div>
-        </section>
-
-        <!-- HABITS VIEW -->
-        <section class="view" id="view-habits">
-          <div class="section-head">
-            <div>
-              <h1>Learned Habits</h1>
-              <p class="muted">When enabled, wakey learns repeated manual sessions and asks if you want to stay awake.</p>
-            </div>
-          </div>
-          <div class="card">
-            <div id="habitsList" class="list-stack muted">No learned patterns yet.</div>
-          </div>
-        </section>
-
-        <!-- SETTINGS VIEW -->
-        <section class="view" id="view-settings">
-          <div class="section-head">
-            <div>
-              <h1>Settings</h1>
-              <p class="muted">Configure power safety, pre-expiry warnings, habits, and your Grok bot bridge.</p>
-            </div>
-          </div>
-
-          <div class="card">
-            <h2>Power &amp; Warnings</h2>
-            <div class="settings-grid">
-              <label class="switch-row">
-                <input type="checkbox" id="setAllowScreenOff" />
-                <span>Allow screen off by default</span>
-              </label>
-              <label class="switch-row">
-                <input type="checkbox" id="setPauseBattery" />
-                <span>Pause schedules/agents on battery</span>
-              </label>
-              <label>
-                <span>Min Battery Cutoff (%)</span>
-                <input type="number" id="setMinBattery" min="5" max="95" />
-              </label>
-              <label>
-                <span>Pre-Expiry Warning (minutes before end)</span>
-                <input type="number" id="setWarnMins" min="0" max="60" />
-              </label>
-              <label class="switch-row">
-                <input type="checkbox" id="setHabitsEnabled" />
-                <span>Enable Habit Learning &amp; Prompts</span>
-              </label>
-              <label>
-                <span>Habit Min Occurrences</span>
-                <input type="number" id="setHabitMinOcc" min="2" max="20" />
-              </label>
-            </div>
-          </div>
-
-          <div class="card">
-            <h2>Grok Bot &amp; Webhook Bridge</h2>
-            <div class="settings-grid">
-              <label class="switch-row">
-                <input type="checkbox" id="botEnabled" />
-                <span>Enable Grok Bot Bridge</span>
-              </label>
-              <label>
-                <span>Outbound Webhook URL</span>
-                <input type="url" id="botWebhook" placeholder="https://your-bot-endpoint/wakey-hook" />
-              </label>
-              <label>
-                <span>Webhook Secret / Bearer</span>
-                <input type="password" id="botSecret" placeholder="optional secret" />
-              </label>
-              <label>
-                <span>Inbound HTTP Listen Address</span>
-                <input type="text" id="botListen" placeholder="127.0.0.1:7842" />
-              </label>
-              <label>
-                <span>Inbound Auth Token</span>
-                <input type="password" id="botToken" placeholder="optional bearer token" />
-              </label>
-              <label class="switch-row">
-                <input type="checkbox" id="botNotifyPreExpiry" />
-                <span>Send pre-expiry extend prompts to Grok bot</span>
-              </label>
-            </div>
-            <div class="form-actions" style="margin-top: 14px;">
-              <button class="btn primary" id="btnSaveSettings">Save All Settings</button>
-              <span class="muted" id="saveFeedback"></span>
-            </div>
-          </div>
-        </section>
-      </main>
+      <!-- BETTERDISPLAY-STYLE FOOTER BAR -->
+      <footer class="bottom-bar">
+        <button
+          class="footer-cta"
+          id="btnOpenPair"
+          data-tooltip="Pair and remotely keep another computer awake"
+        >
+          <span>＋</span> Pair Another PC
+        </button>
+        <div class="footer-icons">
+          <button
+            class="circle-btn"
+            id="btnToggleWide"
+            data-tooltip="Toggle between compact popover width and wide dashboard width"
+          >
+            ⤢
+          </button>
+          <button
+            class="circle-btn"
+            id="btnOpenSettings"
+            data-tooltip="Open power safety, VPS relay, and Grok Bot settings"
+          >
+            ⚙
+          </button>
+        </div>
+      </footer>
     </div>
+
+    <div id="floatingTooltip" class="floating-tooltip hidden"></div>
 
     <script src="app.js"></script>
   </body>
